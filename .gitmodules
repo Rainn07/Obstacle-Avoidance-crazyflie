@@ -1,0 +1,6 @@
+[submodule "path/to/crazyflie-simulation"]
+	path = path/to/crazyflie-simulation
+	url = https://github.com/bitcraze/crazyflie-simulation.git
+[submodule "path/to/path/to/crazyflie-lib-python"]
+	path = path/to/path/to/crazyflie-lib-python
+	url = https://github.com/bitcraze/crazyflie-lib-python.git
