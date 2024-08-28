@@ -12,7 +12,7 @@ def plot_flight_data(csv_filename):
     plt.figure(figsize=(12, 6))
     
     # Plot X and Y positions
-    plt.subplot(1, 2, 1)
+    plt.subplot(1, 3, 1)
     plt.plot(df['Time'], df['X'], label='X Position', color='blue')
     plt.plot(df['Time'], df['Y'], label='Y Position', color='red')
     plt.xlabel('Time (s)')
@@ -22,12 +22,22 @@ def plot_flight_data(csv_filename):
     plt.grid(True)
     
     # Plot velocity data
-    plt.subplot(1, 2, 2)
-    plt.plot(df['Time'], df['Vx'], label='Vx Velocity', color='green')
+    plt.subplot(1, 3, 2)
+    """plt.plot(df['Time'], df['Vx'], label='Vx Velocity', color='green')
     plt.plot(df['Time'], df['Vy'], label='Vy Velocity', color='orange')
     plt.xlabel('Time (s)')
     plt.ylabel('Velocity')
     plt.title('Velocity Over Time')
+   """
+    plt.legend()
+    plt.grid(True)
+
+    # Plot trajectory data
+    plt.subplot(1, 3, 3)
+    plt.plot(df['X'], df['Y'], label='Trajectory', color='blue')
+    plt.xlabel('x position')
+    plt.ylabel('y position')
+    plt.title('Trajectory')
     plt.legend()
     plt.grid(True)
     
