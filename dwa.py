@@ -3,6 +3,7 @@ import sys
 import time
 from threading import Event
 import csv
+import numpy as np
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -31,7 +32,7 @@ class CrazyflieController:
         self.deck_attached_event = Event()
         self.battery_level = 100  # Placeholder for battery level
 
-    def log_sensor_data(self, multiranger, csv_writer):
+    def log_sensor_data(self, multiranger, csv_writer, Vx, Vy):
         csv_writer.writerow([
             time.time(),
             multiranger.front,
@@ -41,6 +42,9 @@ class CrazyflieController:
             multiranger.up,
             self.position_estimate[0],
             self.position_estimate[1],
+            Vx,
+            Vy,
+
             self.battery_level
         ])
 
@@ -106,7 +110,7 @@ class CrazyflieController:
             
             mc.start_linear_motion(velocity[0], velocity[1], 0)
             
-            self.log_sensor_data(multiranger, csv_writer)
+            self.log_sensor_data(multiranger, csv_writer, velocity[0], velocity[1])
             
             time.sleep(LOGGING_INTERVAL)
         
@@ -117,7 +121,7 @@ class CrazyflieController:
             with Multiranger(scf) as multiranger:
                 with open('flight_log.csv', 'w', newline='') as csvfile:
                     csv_writer = csv.writer(csvfile)
-                    csv_writer.writerow(['Time', 'Front', 'Left', 'Right', 'Back', 'Up', 'X', 'Y', 'Battery'])
+                    csv_writer.writerow(['Time', 'Front', 'Left', 'Right', 'Back', 'Up', 'X', 'Y', 'Vx', 'Vy' 'Battery'])
                     
                     for waypoint in waypoints:
                         self.move_to_waypoint(mc, waypoint, multiranger, csv_writer)
@@ -157,7 +161,7 @@ class CrazyflieController:
                 logconf.start()
 
                 waypoints = [
-                    [2.0, 0.0]#,
+                    [-3.0, 0.0]#,
                     #[1.0, 1.0],
                    # [-1.0, -1.0]
                 ]
