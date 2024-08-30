@@ -20,7 +20,7 @@ BOX_LIMIT = 0.5
 SAFETY_THRESHOLD = 0.2
 V_AVOID = 0.15
 DELTA_D = 0.2
-LOGGING_INTERVAL = 0.1  # seconds
+LOGGING_INTERVAL = 2  # seconds
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -66,84 +66,77 @@ class CrazyflieController:
             self.perform_rotations(mc)
             mc.stop()
 
+    def avoid_obstacles(self, mc, multiranger):
+            """
+            Continuously checks for obstacles in all directions and moves the drone accordingly to avoid them.
+
+            Parameters:
+                mc (MotionCommander): The motion commander instance to control the drone.
+                multiranger (MultiRanger): The MultiRanger instance for obstacle detection.
+            """
+            # Avoid obstacles in front
+            while multiranger.front is not None and multiranger.front < SAFETY_THRESHOLD:
+                logger.info("Obstacle detected in front, moving right")
+                mc.right(V_AVOID)
+                time.sleep(LOGGING_INTERVAL)
+
+            # Avoid obstacles on the left
+            while multiranger.left is not None and multiranger.left < SAFETY_THRESHOLD:
+                logger.info("Obstacle detected on the left, moving right")
+                mc.right(V_AVOID)
+                time.sleep(LOGGING_INTERVAL)
+
+            # Avoid obstacles on the right
+            while multiranger.right is not None and multiranger.right < SAFETY_THRESHOLD:
+                logger.info("Obstacle detected on the right, moving left")
+                mc.left(V_AVOID)
+                time.sleep(LOGGING_INTERVAL)
+
+            # Avoid obstacles behind (if needed)
+            while multiranger.back is not None and multiranger.back < SAFETY_THRESHOLD:
+                logger.info("Obstacle detected behind, moving forward")
+                mc.forward(V_AVOID)
+                time.sleep(LOGGING_INTERVAL)
+
+
     def move_to_waypoint(self, mc, waypoint, multiranger, csv_writer):
         logger.info(f"Moving to waypoint: {waypoint}")
-        start_time = time.time()
-        last_readings = {
-            'front': float('inf'), 'left': float('inf'),
-            'right': float('inf'), 'back': float('inf')
-        }
-        
-        MAX_VELOCITY = 0.05  # Maximum velocity in m/s
-        
+
         while True:
             current_pos = self.position_estimate
             distance = ((waypoint[0] - current_pos[0])**2 + 
                         (waypoint[1] - current_pos[1])**2)**0.5
 
+            logger.info(f"Distance to waypoint: {distance}")
+
             if distance < 0.1:
                 logger.info(f"Reached waypoint: {waypoint}")
                 break
 
-            # Get all sensor readings
-            readings = {
-                'front': multiranger.front if multiranger.front is not None else float('inf'),
-                'left': multiranger.left if multiranger.left is not None else float('inf'),
-                'right': multiranger.right if multiranger.right is not None else float('inf'),
-                'back': multiranger.back if multiranger.back is not None else float('inf')
-            }
+            # Call the obstacle avoidance function
+            self.avoid_obstacles(mc, multiranger)
 
-            # Calculate rates of change
-            rates = {k: (v - last_readings[k]) / LOGGING_INTERVAL for k, v in readings.items()}
+            # Calculate direction and move towards the waypoint
+            direction = [
+                waypoint[0] - current_pos[0],
+                waypoint[1] - current_pos[1]
+            ]
             
-            # Determine the direction with the highest threat
-            threat_direction = max(rates, key=rates.get)
-            threat_level = rates[threat_direction]
+            magnitude = (direction[0]**2 + direction[1]**2)**0.5
+            normalized_direction = [d / magnitude for d in direction]
+            velocity = [d * 0.2 for d in normalized_direction]
+            
+            mc.start_linear_motion(velocity[0], velocity[1], 0)
 
-            # Reactive avoidance
-            if threat_level > 0 and readings[threat_direction] < SAFETY_THRESHOLD:
-                avoid_velocity = 0.2 #min(V_AVOID * (1 + threat_level), MAX_VELOCITY)  # Cap at MAX_VELOCITY
-                if threat_direction == 'front':
-                    mc.back(avoid_velocity)
-                elif threat_direction == 'back':
-                    mc.forward(avoid_velocity)
-                elif threat_direction == 'left':
-                    mc.right(avoid_velocity)
-                elif threat_direction == 'right':
-                    mc.left(avoid_velocity)
-                logger.info(f"Avoiding obstacle from {threat_direction} direction")
-                velocity = [0, 0]  # Set velocity to zero for logging purposes
-            else:
-                # Move towards waypoint
-                direction = [
-                    waypoint[0] - current_pos[0],
-                    waypoint[1] - current_pos[1]
-                ]
-                magnitude = (direction[0]**2 + direction[1]**2)**0.5
-                normalized_direction = [d / magnitude for d in direction]
-                
-                # Adjust velocity based on proximity to obstacles
-                proximity_factor = min(readings.values()) / SAFETY_THRESHOLD
-                velocity = [d * MAX_VELOCITY * proximity_factor for d in normalized_direction]
-                
-                # Limit the overall velocity to MAX_VELOCITY
-                velocity_magnitude = (velocity[0]**2 + velocity[1]**2)**0.5
-                if velocity_magnitude > MAX_VELOCITY:
-                    velocity = [v * MAX_VELOCITY / velocity_magnitude for v in velocity]
-        
-                mc.start_linear_motion(velocity[0], velocity[1], 0)
-
+            # Log sensor data and velocities
             self.log_sensor_data(multiranger, csv_writer, velocity[0], velocity[1])
-            
-            # Update last readings
-            last_readings = readings
-
             time.sleep(LOGGING_INTERVAL)
 
         mc.stop()
 
+
     def move_through_waypoints(self, scf, waypoints):
-        with MotionCommander(scf, default_height=DEFAULT_HEIGHT, default_velocity = 0.15) as mc:
+        with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
             with Multiranger(scf) as multiranger:
                 with open('flight_log.csv', 'w', newline='') as csvfile:
                     csv_writer = csv.writer(csvfile)
@@ -187,7 +180,7 @@ class CrazyflieController:
                 logconf.start()
 
                 waypoints = [
-                    [1.0, 0.0]#,
+                    [2.0, 0.0]#,
                     #[1.0, 1.0],
                    # [-1.0, -1.0]
                 ]
