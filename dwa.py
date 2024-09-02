@@ -1,30 +1,51 @@
+import numpy as np
 import logging
 import sys
 import time
-from threading import Event
 import csv
-import numpy as np
+from threading import Event
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
-from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils.multiranger import Multiranger
 from cflib.utils import uri_helper
 
 # Configuration
-URI = uri_helper.uri_from_env(default='radio://0/90/2M/E7E7E7E7E7')
-DEFAULT_HEIGHT = 0.5
-BOX_LIMIT = 0.5
-SAFETY_THRESHOLD = 0.2
-V_AVOID = 0.15
-DELTA_D = 0.2
+URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7')
+DEFAULT_HEIGHT = 0.6
+SAFETY_THRESHOLD = 0.3
 LOGGING_INTERVAL = 0.1  # seconds
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+class DynamicWindowApproach:
+    def __init__(self, max_linear_vel, min_linear_vel, safety_threshold):
+        self.max_linear_vel = max_linear_vel
+        self.min_linear_vel = min_linear_vel
+        self.safety_threshold = safety_threshold
+
+    def evaluate_trajectory(self, current_pos, current_vel, waypoint, obstacles):
+        distance_to_waypoint = np.sqrt((waypoint[0] - current_pos[0])**2 + (waypoint[1] - current_pos[1])**2)
+        distance_to_obstacles = min([np.sqrt((obstacle[0] - current_pos[0])**2 + (obstacle[1] - current_pos[1])**2) for obstacle in obstacles], default=float('inf'))
+        cost = distance_to_waypoint + 100.0 / (distance_to_obstacles + 0.01)
+        return cost
+
+    def find_best_velocity(self, current_pos, current_vel, waypoint, obstacles):
+        best_cost = float('inf')
+        best_vel = [0, 0]
+
+        for vx in np.arange(self.min_linear_vel, self.max_linear_vel + 0.05, 0.05):
+            for vy in np.arange(self.min_linear_vel, self.max_linear_vel + 0.05, 0.05):
+                cost = self.evaluate_trajectory(current_pos, [vx, vy], waypoint, obstacles)
+                if cost < best_cost:
+                    best_cost = cost
+                    best_vel = [vx, vy]
+
+        return best_vel
 
 class CrazyflieController:
     def __init__(self):
@@ -44,101 +65,50 @@ class CrazyflieController:
             self.position_estimate[1],
             Vx,
             Vy,
-
             self.battery_level
         ])
-
-    def perform_rotations(self, mc):
-        rotations = [
-            (mc.turn_left, 90),
-            (mc.turn_right, 90),
-            (mc.turn_right, 90),
-            (mc.turn_left, 90)
-        ]
-        for rotation_func, angle in rotations:
-            rotation_func(angle)
-            time.sleep(1)
-
-    def take_off_and_rotate(self, scf):
-        with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
-            logger.info("Taking off and performing rotations")
-            time.sleep(3)
-            self.perform_rotations(mc)
-            mc.stop()
-
-    def move_to_waypoint(self, mc, waypoint, multiranger, csv_writer):
-        logger.info(f"Moving to waypoint: {waypoint}")
-        start_time = time.time()
-        while True:
-            current_pos = self.position_estimate
-            distance = ((waypoint[0] - current_pos[0])**2 + 
-                        (waypoint[1] - current_pos[1])**2)**0.5
-            
-            if distance < 0.1:
-                logger.info(f"Reached waypoint: {waypoint}")
-                break
-            
-            front_sensor_dist = multiranger.front if multiranger.front is not None else float('inf')
-            left_sensor_dist = multiranger.left if multiranger.left is not None else float('inf')
-            
-            if front_sensor_dist < SAFETY_THRESHOLD:
-                logger.info("Obstacle detected in front, moving right")
-                mc.right(V_AVOID)
-                time.sleep(1)
-                if multiranger.front is None or multiranger.front >= SAFETY_THRESHOLD:
-                    mc.right(DELTA_D)
-                    time.sleep(1)
-                    mc.forward(V_AVOID)
-                    time.sleep(1)
-            
-            if left_sensor_dist < SAFETY_THRESHOLD:
-                logger.info("Ensuring safe distance on left")
-                mc.right(V_AVOID)
-                time.sleep(1)
-                if multiranger.left is None or multiranger.left >= SAFETY_THRESHOLD:
-                    mc.forward(DELTA_D)
-                    time.sleep(1)
-
-            direction = [
-                waypoint[0] - current_pos[0],
-                waypoint[1] - current_pos[1]
-            ]
-            
-            magnitude = (direction[0]**2 + direction[1]**2)**0.5
-            normalized_direction = [d / magnitude for d in direction]
-            velocity = [d * 0.2 for d in normalized_direction]
-            
-            mc.start_linear_motion(velocity[0], velocity[1], 0)
-            
-            self.log_sensor_data(multiranger, csv_writer, velocity[0], velocity[1])
-            
-            time.sleep(LOGGING_INTERVAL)
-        
-        mc.stop()
 
     def move_through_waypoints(self, scf, waypoints):
         with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
             with Multiranger(scf) as multiranger:
                 with open('flight_log.csv', 'w', newline='') as csvfile:
                     csv_writer = csv.writer(csvfile)
-                    csv_writer.writerow(['Time', 'Front', 'Left', 'Right', 'Back', 'Up', 'X', 'Y', 'Vx', 'Vy' 'Battery'])
+                    csv_writer.writerow(['Time', 'Front', 'Left', 'Right', 'Back', 'Up', 'X', 'Y', 'Vx', 'Vy', 'Battery'])
                     
+                    # Initialize the DWA algorithm
+                    dwa = DynamicWindowApproach(max_linear_vel=0.5, min_linear_vel=0.1, safety_threshold=SAFETY_THRESHOLD)
+
                     for waypoint in waypoints:
-                        self.move_to_waypoint(mc, waypoint, multiranger, csv_writer)
-                        time.sleep(1)
+                        while True:
+                            current_pos = self.position_estimate
+                            current_vel = [0, 0]  # Assuming the drone can only move linearly
 
-    def log_pos_callback(self, timestamp, data, logconf):
-        self.position_estimate[0] = data['stateEstimate.x']
-        self.position_estimate[1] = data['stateEstimate.y']
-        logger.debug(f"Position update: {self.position_estimate}")
+                            # Get the obstacle positions from the multiranger sensor
+                            obstacle_positions = []
+                            if multiranger.front is not None and multiranger.front < SAFETY_THRESHOLD:
+                                obstacle_positions.append([current_pos[0] + multiranger.front, current_pos[1]])
+                            if multiranger.left is not None and multiranger.left < SAFETY_THRESHOLD:
+                                obstacle_positions.append([current_pos[0], current_pos[1] + multiranger.left])
+                            if multiranger.right is not None and multiranger.right < SAFETY_THRESHOLD:
+                                obstacle_positions.append([current_pos[0], current_pos[1] - multiranger.right])
+                            if multiranger.back is not None and multiranger.back < SAFETY_THRESHOLD:
+                                obstacle_positions.append([current_pos[0] - multiranger.back, current_pos[1]])
 
-    def param_deck_flow(self, _, value_str):
-        value = int(value_str)
-        if value:
-            self.deck_attached_event.set()
-            logger.info('Flow deck is attached!')
-        else:
-            logger.warning('Flow deck is NOT attached!')
+                            # Find the best linear velocities using the DWA algorithm
+                            best_vel = dwa.find_best_velocity(current_pos, current_vel, waypoint, obstacle_positions)
+
+                            # Move the drone based on the best velocities
+                            mc.start_linear_motion(best_vel[0], best_vel[1], 0)
+
+                            # Log sensor data and velocities
+                            self.log_sensor_data(multiranger, csv_writer, best_vel[0], best_vel[1])
+                            time.sleep(LOGGING_INTERVAL)
+
+                            distance = ((waypoint[0] - current_pos[0])**2 + (waypoint[1] - current_pos[1])**2)**0.5
+                            if distance < 0.1:
+                                break
+
+                    mc.stop()
 
     def run(self):
         cflib.crtp.init_drivers()
@@ -161,9 +131,9 @@ class CrazyflieController:
                 logconf.start()
 
                 waypoints = [
-                    [-3.0, 0.0]#,
-                    #[1.0, 1.0],
-                   # [-1.0, -1.0]
+                    [2.0, 0.0],
+                    [0.0, 2.0],
+                    [2.0, 2.0]
                 ]
 
                 self.move_through_waypoints(scf, waypoints)
